@@ -11,10 +11,21 @@ class InputLeap < Formula
   depends_on "openssl"
   depends_on :macos
 
-  # Skip DMG generation in the macOS bundle script
-  patch :DATA
-
   def install
+    # Replace the entire DMG/debug conditional with a simple bundle build.
+    # The original script has a Release branch (builds dmg) and else branch
+    # (builds debug bundle). We just want a plain macdeployqt call.
+    bundle_script = "dist/macos/bundle/build_dist.sh.in"
+    inreplace bundle_script,
+      /^# Use macdeployqt.*^fi$/m,
+      <<~SH.chomp
+        info "Building app bundle"
+        "$DEPLOYQT" InputLeap.app \\
+        -executable="$B_INPUTLEAPC" \\
+        -executable="$B_INPUTLEAPS" || exit 1
+        success "Bundle created successfully"
+      SH
+
     args = std_cmake_args + %W[
       -DINPUTLEAP_BUILD_TESTS=OFF
       -DINPUTLEAP_BUILD_X11=OFF
@@ -44,32 +55,3 @@ class InputLeap < Formula
     EOS
   end
 end
-
-__END__
-diff --git a/dist/macos/bundle/build_dist.sh.in b/dist/macos/bundle/build_dist.sh.in
---- a/dist/macos/bundle/build_dist.sh.in
-+++ b/dist/macos/bundle/build_dist.sh.in
-@@ -36,16 +36,8 @@
- DEPLOYQT=@QT_DEPLOY_TOOL@
-
- # Use macdeployqt to include libraries and create dmg
--if [ "$B_BUILDTYPE" = "Release" ]; then
--    info "Building Release disk image (dmg)"
--    "$DEPLOYQT" InputLeap.app -dmg \
--    -executable="$B_INPUTLEAPC" \
--    -executable="$B_INPUTLEAPS" || exit 1
--    mv "InputLeap.dmg" "InputLeap-$B_VERSION.dmg" || exit 1
--    success "Created InputLeap-$B_VERSION.dmg"
--else
--    warn "Disk image (dmg) only created for Release builds"
--    info "Building debug bundle"
--    "$DEPLOYQT" InputLeap.app -no-strip \
--    -executable="$B_INPUTLEAPC" \
--    -executable="$B_INPUTLEAPS" || exit 1
--    success "Bundle created successfully"
--fi
-+info "Building app bundle"
-+"$DEPLOYQT" InputLeap.app \
-+-executable="$B_INPUTLEAPC" \
-+-executable="$B_INPUTLEAPS" || exit 1
-+success "Bundle created successfully"
