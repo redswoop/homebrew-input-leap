@@ -6,17 +6,33 @@ class InputLeap < Formula
   license "GPL-2.0-only"
 
   depends_on "cmake" => :build
+  depends_on "ninja" => :build
   depends_on "pkg-config" => :build
-  depends_on "qt"
   depends_on "openssl"
   depends_on :macos
 
   def install
-    # Replace the entire DMG/debug conditional with a simple bundle build.
-    # The original script has a Release branch (builds dmg) and else branch
-    # (builds debug bundle). We just want a plain macdeployqt call.
-    bundle_script = "dist/macos/bundle/build_dist.sh.in"
-    inreplace bundle_script,
+    # Use Qt 6.6.3 (downloaded via aqtinstall) instead of Homebrew's Qt.
+    # Homebrew's Qt 6.11+ causes input lag due to framework changes.
+    qt_dir = buildpath/"qt-6.6.3"
+    system "pip3", "install", "--quiet", "aqtinstall"
+    system "python3", "-m", "aqt", "install-qt", "mac", "desktop", "6.6.3",
+           "clang_64", "--outputdir", qt_dir
+    qt_prefix = qt_dir/"6.6.3/macos"
+
+    # Remove AGL framework references from Qt 6.6.3 — AGL is deprecated
+    # and removed from modern macOS SDKs but Qt 6.6.3's prl files reference it.
+    Dir[qt_prefix/"lib/**/*.prl"].each do |prl|
+      inreplace prl, / -framework AGL/, ""
+      inreplace prl, /;-framework;AGL/, ""
+    end
+    inreplace qt_prefix/"lib/cmake/Qt6/FindWrapOpenGL.cmake",
+      /^\s*find_library\(WrapOpenGL_AGL.*?endif\(\)/m,
+      "        # AGL removed — deprecated on modern macOS\n" \
+      "        target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE ${__opengl_fw_path})"
+
+    # Patch the bundle script to skip DMG generation
+    inreplace "dist/macos/bundle/build_dist.sh.in",
       /^# Use macdeployqt.*^fi$/m,
       <<~SH.chomp
         info "Building app bundle"
@@ -26,13 +42,24 @@ class InputLeap < Formula
         success "Bundle created successfully"
       SH
 
+    # Use macOS 15 SDK if available — the macOS 26 SDK has a CoreGraphics
+    # regression that causes severe mouse input lag.
+    sdk15 = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
+    sdk15 = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk" unless File.exist?(sdk15)
+
     args = std_cmake_args + %W[
+      -G Ninja
+      -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_UNITY_BUILD=1
+      -DCMAKE_PREFIX_PATH=#{qt_prefix}
+      -DOPENSSL_ROOT_DIR=#{Formula["openssl"].opt_prefix}
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=14
+      -DQT_DEFAULT_MAJOR_VERSION=6
       -DINPUTLEAP_BUILD_TESTS=OFF
       -DINPUTLEAP_BUILD_X11=OFF
-      -DCMAKE_BUILD_TYPE=Release
-      -DCMAKE_PREFIX_PATH=#{Formula["qt"].opt_prefix}
-      -DOPENSSL_ROOT_DIR=#{Formula["openssl"].opt_prefix}
+      -DINPUTLEAP_BUILD_GULRAK_FILESYSTEM=0
     ]
+    args << "-DCMAKE_OSX_SYSROOT=#{sdk15}" if File.exist?(sdk15)
 
     system "cmake", "-S", ".", "-B", "build", *args
     system "cmake", "--build", "build"
